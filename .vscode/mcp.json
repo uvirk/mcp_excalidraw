@@ -1,0 +1,11 @@
+{
+  "servers": {
+    "Azure-Excalidraw-Deploy": {
+      "type": "http",
+      "url": "https://ca-mcp-4rgrkne2kemxc.livelydesert-455e7309.eastus.azurecontainerapps.io/mcp",
+      "headers": {
+        "Authorization": "Bearer 4GWwvf6p20AEIjJU97VBaMFqiNbcD1xP"
+      }
+    }
+  }
+}

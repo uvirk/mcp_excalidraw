@@ -6,10 +6,10 @@ process.env.NO_COLOR = '1';
 
 import { fileURLToPath } from "url";
 import { deflateSync } from 'zlib';
-import { webcrypto } from 'crypto';
+import { webcrypto, randomUUID } from 'crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { 
   CallToolRequestSchema, 
   ListToolsRequestSchema,
@@ -2224,15 +2224,15 @@ registerToolHandlers(server);
 async function runServer(): Promise<void> {
   try {
     if (IS_SSE_MODE) {
-      logger.info('Starting Excalidraw MCP server in SSE mode...');
+      logger.info('Starting Excalidraw MCP server in HTTP Streamable mode...');
 
       const app = express();
       app.use(cors());
+      app.use(express.json());
 
-      // API key authentication middleware for SSE endpoints
+      // API key authentication middleware
       const authenticateApiKey = (req: express.Request, res: express.Response, next: express.NextFunction): void => {
         if (!MCP_API_KEY) {
-          logger.warn('MCP_API_KEY not set — SSE endpoint is unauthenticated!');
           next();
           return;
         }
@@ -2244,61 +2244,84 @@ async function runServer(): Promise<void> {
         next();
       };
 
-      // Track active SSE transports by session ID
-      const transports = new Map<string, SSEServerTransport>();
+      // Track active transports by session ID
+      const transports = new Map<string, StreamableHTTPServerTransport>();
 
       // Health check endpoint (no auth required)
       app.get('/health', (_req, res) => {
-        res.json({ status: 'ok', transport: 'sse', sessions: transports.size });
+        res.json({ status: 'ok', transport: 'streamable-http', sessions: transports.size });
       });
 
-      // SSE connection endpoint
-      app.get('/sse', authenticateApiKey, async (req, res) => {
-        logger.info('New SSE connection established');
-        const transport = new SSEServerTransport('/messages', res);
-        transports.set(transport.sessionId, transport);
+      // MCP endpoint — POST for messages
+      app.post('/mcp', authenticateApiKey, async (req: any, res: any) => {
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
-        transport.onclose = () => {
-          logger.info(`SSE session ${transport.sessionId} closed`);
-          transports.delete(transport.sessionId);
-        };
-
-        const mcpServer = new Server(
-          {
-            name: "mcp-excalidraw-server",
-            version: "2.0.0",
-            description: "Programmatic canvas toolkit for Excalidraw diagrams"
-          },
-          {
-            capabilities: {
-              tools: Object.fromEntries(tools.map(tool => [tool.name, {
-                description: tool.description,
-                inputSchema: tool.inputSchema
-              }]))
+        if (sessionId && transports.has(sessionId)) {
+          const transport = transports.get(sessionId)!;
+          await transport.handleRequest(req, res, req.body);
+        } else {
+          // New session — create transport and server
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            onsessioninitialized: (id) => {
+              logger.info(`New MCP session: ${id}`);
+              transports.set(id, transport);
+            },
+            onsessionclosed: (id) => {
+              logger.info(`MCP session closed: ${id}`);
+              transports.delete(id);
             }
-          }
-        );
+          });
 
-        registerToolHandlers(mcpServer);
-        await transport.start();
-        await mcpServer.connect(transport);
+          const mcpServer = new Server(
+            {
+              name: "mcp-excalidraw-server",
+              version: "2.0.0",
+              description: "Programmatic canvas toolkit for Excalidraw diagrams"
+            },
+            {
+              capabilities: {
+                tools: Object.fromEntries(tools.map(tool => [tool.name, {
+                  description: tool.description,
+                  inputSchema: tool.inputSchema
+                }]))
+              }
+            }
+          );
+
+          registerToolHandlers(mcpServer);
+          await mcpServer.connect(transport);
+          await transport.handleRequest(req, res, req.body);
+        }
       });
 
-      // Message endpoint for SSE clients
-      app.post('/messages', authenticateApiKey, async (req, res) => {
-        const sessionId = req.query.sessionId as string;
-        const transport = transports.get(sessionId);
-        if (!transport) {
-          res.status(404).json({ error: 'Session not found' });
-          return;
+      // MCP endpoint — GET for SSE stream
+      app.get('/mcp', authenticateApiKey, async (req: any, res: any) => {
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        if (sessionId && transports.has(sessionId)) {
+          const transport = transports.get(sessionId)!;
+          await transport.handleRequest(req, res);
+        } else {
+          res.status(400).json({ error: 'Missing or invalid session ID' });
         }
-        await transport.handlePostMessage(req, res);
+      });
+
+      // MCP endpoint — DELETE for session cleanup
+      app.delete('/mcp', authenticateApiKey, async (req: any, res: any) => {
+        const sessionId = req.headers['mcp-session-id'] as string | undefined;
+        if (sessionId && transports.has(sessionId)) {
+          const transport = transports.get(sessionId)!;
+          await transport.handleRequest(req, res);
+        } else {
+          res.status(404).json({ error: 'Session not found' });
+        }
       });
 
       app.listen(MCP_PORT, '0.0.0.0', () => {
-        logger.info(`Excalidraw MCP server (SSE) listening on port ${MCP_PORT}`);
+        logger.info(`Excalidraw MCP server (Streamable HTTP) listening on port ${MCP_PORT}`);
+        logger.info(`MCP endpoint: http://0.0.0.0:${MCP_PORT}/mcp`);
         if (!MCP_API_KEY) {
-          logger.warn('WARNING: No MCP_API_KEY set. SSE endpoint is publicly accessible!');
+          logger.warn('WARNING: No MCP_API_KEY set. MCP endpoint is publicly accessible!');
         }
       });
     } else {

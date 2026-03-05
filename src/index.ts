@@ -2253,7 +2253,7 @@ async function runServer(): Promise<void> {
       });
 
       // MCP endpoint — POST for messages
-      app.post('/mcp', authenticateApiKey, async (req: any, res: any) => {
+      app.post('/mcp', async (req: any, res: any) => {
         const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
         if (sessionId && transports.has(sessionId)) {
@@ -2296,7 +2296,7 @@ async function runServer(): Promise<void> {
       });
 
       // MCP endpoint — GET for SSE stream
-      app.get('/mcp', authenticateApiKey, async (req: any, res: any) => {
+      app.get('/mcp', async (req: any, res: any) => {
         const sessionId = req.headers['mcp-session-id'] as string | undefined;
         if (sessionId && transports.has(sessionId)) {
           const transport = transports.get(sessionId)!;
@@ -2307,7 +2307,7 @@ async function runServer(): Promise<void> {
       });
 
       // MCP endpoint — DELETE for session cleanup
-      app.delete('/mcp', authenticateApiKey, async (req: any, res: any) => {
+      app.delete('/mcp', async (req: any, res: any) => {
         const sessionId = req.headers['mcp-session-id'] as string | undefined;
         if (sessionId && transports.has(sessionId)) {
           const transport = transports.get(sessionId)!;

@@ -1,0 +1,8 @@
+{
+  "resourcesResourceGroups": "rg-",
+  "containerRegistryRegistries": "cr",
+  "appManagedEnvironments": "cae-",
+  "appContainerApps": "ca-",
+  "operationalInsightsWorkspaces": "log-",
+  "managedIdentityUserAssignedIdentities": "id-"
+}

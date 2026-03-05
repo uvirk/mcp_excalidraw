@@ -9,6 +9,7 @@ import { deflateSync } from 'zlib';
 import { webcrypto } from 'crypto';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { 
   CallToolRequestSchema, 
   ListToolsRequestSchema,
@@ -19,6 +20,8 @@ import { z } from 'zod';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import express from 'express';
+import cors from 'cors';
 import logger from './utils/logger.js';
 import {
   generateId,
@@ -51,6 +54,12 @@ function sanitizeFilePath(filePath: string): string {
 // Express server configuration
 const EXPRESS_SERVER_URL = process.env.EXPRESS_SERVER_URL || 'http://localhost:3000';
 const ENABLE_CANVAS_SYNC = process.env.ENABLE_CANVAS_SYNC !== 'false'; // Default to true
+
+// Transport mode: 'stdio' (default/local) or 'sse' (remote/cloud)
+const MCP_TRANSPORT = process.env.MCP_TRANSPORT || 'stdio';
+const MCP_PORT = parseInt(process.env.MCP_PORT || '3001', 10);
+const MCP_API_KEY = process.env.MCP_API_KEY || '';
+const IS_SSE_MODE = MCP_TRANSPORT === 'sse';
 
 // API Response types
 interface ApiResponse {
@@ -858,7 +867,8 @@ function convertTextToLabel(element: ServerElement): ServerElement {
 }
 
 // Set up request handler for tool calls
-server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
+// Tool call handler function — shared between stdio and SSE transports
+async function handleToolCall(request: CallToolRequest) {
   try {
     const { name, arguments: args } = request.params;
     logger.info(`Handling tool call: ${name}`);
@@ -2196,26 +2206,112 @@ server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest)
       isError: true
     };
   }
-});
+}
 
-// Set up request handler for listing available tools
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  logger.info('Listing available tools');
-  return { tools };
-});
+// Helper to register tool handlers on any MCP Server instance
+function registerToolHandlers(mcpServer: Server): void {
+  mcpServer.setRequestHandler(CallToolRequestSchema, handleToolCall);
+  mcpServer.setRequestHandler(ListToolsRequestSchema, async () => {
+    logger.info('Listing available tools');
+    return { tools };
+  });
+}
+
+// Register handlers on the default server (used in stdio mode)
+registerToolHandlers(server);
 
 // Start server
 async function runServer(): Promise<void> {
   try {
-    logger.info('Starting Excalidraw MCP server...');
+    if (IS_SSE_MODE) {
+      logger.info('Starting Excalidraw MCP server in SSE mode...');
 
-    const transport = new StdioServerTransport();
-    logger.debug('Connecting to stdio transport...');
+      const app = express();
+      app.use(cors());
 
-    await server.connect(transport);
-    logger.info('Excalidraw MCP server running on stdio');
+      // API key authentication middleware for SSE endpoints
+      const authenticateApiKey = (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+        if (!MCP_API_KEY) {
+          logger.warn('MCP_API_KEY not set — SSE endpoint is unauthenticated!');
+          next();
+          return;
+        }
+        const authHeader = req.headers.authorization;
+        if (!authHeader || authHeader !== `Bearer ${MCP_API_KEY}`) {
+          res.status(401).json({ error: 'Unauthorized: invalid or missing API key' });
+          return;
+        }
+        next();
+      };
 
-    process.stdin.resume();
+      // Track active SSE transports by session ID
+      const transports = new Map<string, SSEServerTransport>();
+
+      // Health check endpoint (no auth required)
+      app.get('/health', (_req, res) => {
+        res.json({ status: 'ok', transport: 'sse', sessions: transports.size });
+      });
+
+      // SSE connection endpoint
+      app.get('/sse', authenticateApiKey, async (req, res) => {
+        logger.info('New SSE connection established');
+        const transport = new SSEServerTransport('/messages', res);
+        transports.set(transport.sessionId, transport);
+
+        transport.onclose = () => {
+          logger.info(`SSE session ${transport.sessionId} closed`);
+          transports.delete(transport.sessionId);
+        };
+
+        const mcpServer = new Server(
+          {
+            name: "mcp-excalidraw-server",
+            version: "2.0.0",
+            description: "Programmatic canvas toolkit for Excalidraw diagrams"
+          },
+          {
+            capabilities: {
+              tools: Object.fromEntries(tools.map(tool => [tool.name, {
+                description: tool.description,
+                inputSchema: tool.inputSchema
+              }]))
+            }
+          }
+        );
+
+        registerToolHandlers(mcpServer);
+        await mcpServer.connect(transport);
+        await transport.start();
+      });
+
+      // Message endpoint for SSE clients
+      app.post('/messages', authenticateApiKey, async (req, res) => {
+        const sessionId = req.query.sessionId as string;
+        const transport = transports.get(sessionId);
+        if (!transport) {
+          res.status(404).json({ error: 'Session not found' });
+          return;
+        }
+        await transport.handlePostMessage(req, res);
+      });
+
+      app.listen(MCP_PORT, '0.0.0.0', () => {
+        logger.info(`Excalidraw MCP server (SSE) listening on port ${MCP_PORT}`);
+        if (!MCP_API_KEY) {
+          logger.warn('WARNING: No MCP_API_KEY set. SSE endpoint is publicly accessible!');
+        }
+      });
+    } else {
+      logger.info('Starting Excalidraw MCP server in stdio mode...');
+
+      const transport = new StdioServerTransport();
+      logger.debug('Connecting to stdio transport...');
+
+      await server.connect(transport);
+      logger.info('Excalidraw MCP server running on stdio');
+
+      process.stdin.resume();
+    }
   } catch (error) {
     logger.error('Error starting server:', error);
     process.stderr.write(`Failed to start MCP server: ${(error as Error).message}\n${(error as Error).stack}\n`);

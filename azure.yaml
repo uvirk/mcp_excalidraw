@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+name: mcp-excalidraw
+metadata:
+  template: mcp-excalidraw@0.0.1
+services:
+  canvas:
+    project: .
+    host: containerapp
+    language: js
+    docker:
+      path: Dockerfile.canvas
+      context: .
+    config:
+      port: 3000
+      targetPort: 3000
+  mcp:
+    project: .
+    host: containerapp
+    language: js
+    docker:
+      path: Dockerfile
+      context: .
+    config:
+      port: 3001
+      targetPort: 3001

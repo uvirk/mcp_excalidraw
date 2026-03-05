@@ -2280,8 +2280,8 @@ async function runServer(): Promise<void> {
         );
 
         registerToolHandlers(mcpServer);
-        await mcpServer.connect(transport);
         await transport.start();
+        await mcpServer.connect(transport);
       });
 
       // Message endpoint for SSE clients
